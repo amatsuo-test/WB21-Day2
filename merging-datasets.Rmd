@@ -1,8 +1,10 @@
 ---
 title: "Merging the datasets with tidyverse"
-author: ""
+author: ''
 date: "23/03/2021"
-output: html_document
+output:
+  pdf_document: default
+  html_document: default
 ---
 
 ```{r setup, include=FALSE}
@@ -38,14 +40,15 @@ The task is
 
 ```{r}
 library(tidyverse)
+library(magrittr)
 ```
 
 ## Read three data files
 
 ```{r}
-data_covid <- read_csv("../data/covid_us_county.csv.gz", guess_max = 1e5)
-data_demo <- read_csv("../data/acs2017_county_data.csv")
-data_pres <- read_csv("../data/pres16results.csv")
+data_covid <- read_csv("data/covid_us_county.csv.gz", guess_max = 1e5)
+data_demo <- read_csv("data/acs2017_county_data.csv")
+data_pres <- read_csv("data/pres16results.csv")
 ```
 
 
@@ -55,6 +58,10 @@ data_pres <- read_csv("../data/pres16results.csv")
 
 
 ```{r}
+head(data_covid)
+head(data_demo)
+head(data_pres)
+
 ```
 
 - renaming is necessary for `data_demo`
@@ -62,6 +69,15 @@ data_pres <- read_csv("../data/pres16results.csv")
 
 
 ```{r}
+data_demo <- 
+  data_demo %>% 
+  rename(fips = CountyId)
+
+data_pres <- data_pres %>%
+  mutate(fips = as.numeric(fips)) %>%
+  filter(!is.na(fips))
+
+data_covid %<>% filter(!is.na(county))
 
 ```
 
@@ -82,6 +98,20 @@ nrow(data_pres)
 - Do they match? (if not does this seem problematic)?
     
 ```{r}
+data_covid$fips %>% unique %>% length
+data_demo$fips %>% unique %>% length
+data_pres$fips %>% unique %>% length
+
+unique(data_demo$fips) %in% unique(data_covid$fips) %>% table()
+
+data_covid_check <- 
+  data_covid %>% count(fips, county, state)
+
+data_covid_check %>%
+  anti_join(data_demo, by = 'fips')
+data_covid_check %>%
+  anti_join(data_pres, by = 'fips')
+
 
 ```
 
@@ -92,6 +122,11 @@ nrow(data_pres)
 - From covid dataset, get the latest figures for each county
 
 ```{r}
+data_covid_latest <- data_covid %>% 
+  group_by(fips) %>%
+  filter(date == max(date)) %>%
+  ungroup()
+
 
 ```
 
@@ -102,7 +137,8 @@ presidential votes
   - Keep only trump vote rows
 
 ```{r}
-
+data_trump <- data_pres %>%
+  filter(cand == 'Donald Trump')
 ```
 
 ## Merge the datasets
@@ -117,13 +153,22 @@ presidential votes
 - what `_join`?
 
 ```{r}
-data_merged <- NULL
+data_merged <- data_covid_latest %>%
+  inner_join(data_demo %>% select(!c(State, County)), by = "fips") %>%
+  inner_join(data_trump %>% select(!c(county, st)), by = "fips")
 
 ```
 
 ### Create variables for deaths/cases per 1000 population
 
 ```{r}
+
+data_merged <- 
+  data_merged %>%
+  mutate(deaths_per1000 = deaths / TotalPop * 1000) %>%
+  mutate(cases_per1000 = cases / TotalPop * 1000) %>%
+  rename(pct_trump = pct)
+  
 
 ```
 
@@ -136,6 +181,18 @@ data_merged <- NULL
 - let's check: deaths_per1000, cases_per1000, Hispanic, Black, IncomePerCap, Unemployment
 
 ```{r}
+data_merged %>%
+  select(deaths_per1000, cases_per1000, Hispanic, Black, IncomePerCap, 
+         Unemployment, pct_trump) %>% cor()
+
+data_merged %>%
+  select(deaths_per1000, cases_per1000, Hispanic, Black, IncomePerCap, 
+         Unemployment, pct_trump) %>% pairs()
+
+data_merged %>%
+  ungroup() %>%
+  select(deaths_per1000, cases_per1000, Hispanic, Black, IncomePerCap,
+         Unemployment, pct_trump) %>% GGally::ggpairs()
 
 
 ```
@@ -158,6 +215,9 @@ What we need to do is:
 
 
 ```{r}
+data_demo <- data_demo %>% select(!c(State, County))
+data_trump <- data_trump %>% select(!c(county, st, cand))
+data_covid <- data_covid %>% mutate(date = as.character(date))
 
 ```
 
@@ -173,11 +233,14 @@ db <- dbConnect(RSQLite::SQLite(), "~/covid.sqlite")
 
 ### Create/populate tables
 ```{r}
+dbWriteTable(db, "covid", data_covid)
+dbWriteTable(db, "demo", data_demo)
+dbWriteTable(db, "trump", data_trump)
 
 ```
 
 ### Disconnect
 
 ```{r}
-
+dbDisconnect(db)
 ```
